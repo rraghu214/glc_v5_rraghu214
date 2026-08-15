@@ -10,8 +10,8 @@ defaults:
   mention_only_in_public: true
 
 channels:
-  telegram:    {enabled: false}
-  discord:     {enabled: false}
+  telegram:    {enabled: true}
+  discord:     {enabled: true}
   slack:       {enabled: false}
   whatsapp:    {enabled: true}
   teams:       {enabled: false}
@@ -19,9 +19,9 @@ channels:
   line:        {enabled: false}
   signal:      {enabled: false}
   gmail:       {enabled: false}
-  imap:        {enabled: false}
+  imap:        {enabled: true}
   twilio_sms:  {enabled: false}
   twilio_voice: {enabled: false}
   webui:       {enabled: true}
   webhook:     {enabled: false}
-  local_mic:   {enabled: false}
+  local_mic:   {enabled: true}
