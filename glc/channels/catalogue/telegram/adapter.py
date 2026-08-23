@@ -152,7 +152,11 @@ class Adapter(ChannelAdapter):
             if reply.channel_user_id.isdigit()
             else reply.channel_user_id,
             "text": reply.text or "",
-            "parse_mode": "MarkdownV2",
+            # No parse_mode. MarkdownV2 reserves '-', '.', '(', ')', '!' and more,
+            # and every one of those appears in an ordinary URL or sentence, so
+            # any unescaped agent reply comes back as
+            # 400 "Character '-' is reserved and must be escaped".
+            # Sending plain text is correct here: the agent writes prose, not markup.
         }
 
         if reply.thread_id:

@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from glc.channels.catalogue.discord.adapter import Adapter
 from glc.channels.envelope import ChannelReply
 from glc.config import get_or_create_install_token
+from glc.security.pairing import get_pairing_store
 
 # Load environment variables from .env at repository root
 load_dotenv(Path(__file__).resolve().parents[5] / ".env")
@@ -115,6 +116,15 @@ async def run_bridge():
         print("Please set it in your environment or .env file before running.", file=sys.stderr)
         return
 
+    # Owner pairing. Set DISCORD_OWNER_ID to pin it, or leave it unset and the
+    # first human message auto-pairs (see handle_inbound below).
+    owner_id = os.environ.get("DISCORD_OWNER_ID", "").strip() or None
+    if owner_id:
+        get_pairing_store().force_pair_owner("discord", owner_id, user_handle="owner")
+        print(f"[bridge] paired owner from DISCORD_OWNER_ID: {owner_id}")
+    else:
+        print("[bridge] no DISCORD_OWNER_ID set — will auto-pair the first human sender")
+
     # 1. Retrieve the GLC local install token to authorize with the GLC gateway
     install_token = get_or_create_install_token()
     glc_port = os.environ.get("GLC_PORT", "8111")
@@ -154,13 +164,42 @@ async def run_bridge():
 
             # 6. Main event loop: Bridge messages between Discord and GLC
             async def handle_inbound():
+                nonlocal owner_id
                 async for raw_event in discord_ws:
                     event = json.loads(raw_event)
+
+                    # Discord asks for an immediate heartbeat with op 1, and
+                    # acks ours with op 11. Ignoring op 1 makes the connection
+                    # a zombie that Discord drops a minute later with no
+                    # explanation, which is easy to misread as a network fault.
+                    if event.get("op") == 1:
+                        await discord_ws.send(json.dumps({"op": 1, "d": None}))
+                        continue
+                    if event.get("op") == 11:
+                        continue
+                    if event.get("op") in (7, 9):
+                        print(f"[bridge] Discord asked us to reconnect (op {event['op']}). Restart the bridge.")
+                        return
+
                     if event.get("t") == "MESSAGE_CREATE":
                         # Ignore messages sent by the bot itself
                         author = event["d"].get("author", {})
                         if author.get("bot"):
                             continue
+
+                        # Pair the first human sender as owner, the way the
+                        # Telegram bridge does. Without an owner_paired trust
+                        # level the agent is granted no side effects at all, so
+                        # an unpaired bridge looks like an agent that ignores
+                        # you rather than one that lacks authority.
+                        if not owner_id and author.get("id"):
+                            owner_id = str(author["id"])
+                            get_pairing_store().force_pair_owner(
+                                "discord", owner_id,
+                                user_handle=author.get("username") or owner_id,
+                            )
+                            print(f"\n*** auto-paired Discord user {owner_id} "
+                                  f"({author.get('username')}) as owner ***\n")
 
                         print(f"[bridge] received Discord message: {event['d'].get('content')}")
 
@@ -189,6 +228,22 @@ async def run_bridge():
 
             try:
                 await asyncio.gather(handle_inbound(), handle_outbound())
+            except websockets.exceptions.ConnectionClosed:
+                # Without this the close code is swallowed and every failure
+                # looks like a generic network abort. The code is the diagnosis.
+                code = discord_ws.close_code
+                reason = discord_ws.close_reason or ""
+                meaning = {
+                    4004: "AUTHENTICATION FAILED - DISCORD_BOT_TOKEN is wrong or was reset",
+                    4008: "rate limited - too many payloads",
+                    4009: "session timed out - just restart",
+                    4013: "INVALID INTENTS - the intents bitmask is malformed",
+                    4014: ("DISALLOWED INTENTS - enable MESSAGE CONTENT INTENT at "
+                           "discord.com/developers -> your app -> Bot -> Privileged Gateway Intents"),
+                }.get(code, "see https://discord.com/developers/docs/topics/opcodes-and-status-codes")
+                print(f"\n[bridge] Discord closed the connection: code={code} reason={reason!r}")
+                print(f"[bridge] {meaning}\n")
+                raise
             finally:
                 heartbeat_task.cancel()
 
