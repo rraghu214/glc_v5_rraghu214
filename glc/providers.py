@@ -684,6 +684,24 @@ class GitHubProvider(OpenAICompatProvider):
         super().__init__(api_key, model, "https://models.github.ai/inference")
 
 
+class UnslothProvider(OpenAICompatProvider):
+    """Unsloth Desktop's local llama-server, OpenAI-compatible.
+
+    Unlike the hosted OpenAICompatProvider subclasses above, the base_url is
+    not a fixed public endpoint: Unsloth Desktop binds llama-server to an
+    ephemeral local port that is not documented and can change across
+    restarts (found by cross-referencing `netstat` against `tasklist` for
+    S18 — see docs/s18_assignment.md §13 step 1). So base_url comes from the
+    caller (env var), not hardcoded like Groq/Cerebras/Nvidia/GitHub.
+    """
+
+    name = "unsloth_local"
+    capabilities = {**OpenAICompatProvider.capabilities, "reasoning": False}
+
+    def __init__(self, api_key, model, base_url):
+        super().__init__(api_key, model, base_url)
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Gemini
 # ────────────────────────────────────────────────────────────────────────────
@@ -1325,6 +1343,12 @@ def build_providers(cache_store):
         out["github"] = GitHubProvider(k, os.getenv("GITHUB_MODEL", "openai/gpt-4.1-mini"))
     if om := os.getenv("OLLAMA_MODEL"):
         out["ollama"] = OllamaProvider(om, os.getenv("OLLAMA_URL", "http://localhost:11434"))
+    if base_url := os.getenv("UNSLOTH_BASE_URL"):
+        out["unsloth_local"] = UnslothProvider(
+            os.getenv("UNSLOTH_API_KEY", "sk-unsloth-local"),
+            os.getenv("UNSLOTH_MODEL", "unsloth/Qwen3.5-9B-GGUF"),
+            base_url,
+        )
     # V9: bake per-model capability overrides (vision/reasoning) into each
     # instance, so Router.pick() — which reads provider.capabilities directly —
     # sees the resolved truth instead of the class-level default.

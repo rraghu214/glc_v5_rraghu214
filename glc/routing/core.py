@@ -22,6 +22,11 @@ LIMITS = {
     "gemini": {"rpm": 15, "rpd": 1000, "tpm": 250000, "cooldown": 4, "max_ctx": 1000000},
     "openrouter": {"rpm": 20, "rpd": 50, "tpm": 99999999, "cooldown": 3, "max_ctx": 100000},
     "github": {"rpm": 10, "rpd": 50, "tpm": 99999999, "cooldown": 6, "max_ctx": 8000},
+    # Local Unsloth Desktop llama-server (S18). max_ctx matches the model's
+    # actual n_ctx as reported by /v1/models -- 4096 for Qwen3.5-9B-GGUF
+    # loaded 2026-08-23. One local model, no external quota, so rpm/rpd are
+    # bounded only by hardware, not a vendor limit.
+    "unsloth_local": {"rpm": 9999, "rpd": 9999999, "tpm": 99999999, "cooldown": 0, "max_ctx": 4096},
 }
 
 # One Google AI Studio key is one independently-metered provider.  The graph
