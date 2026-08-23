@@ -546,6 +546,11 @@ class OpenAICompatProvider(BaseProvider):
             choice = (d.get("choices") or [{}])[0]
             msg = choice.get("message") or {}
             text = msg.get("content") or ""
+            # Groq and Cerebras always return reasoning in its own field, never
+            # merged into content -- confirmed live, even when reasoning was
+            # never requested. Those tokens are generated and billed either
+            # way; capturing them costs nothing further and was not happening.
+            reasoning_text = msg.get("reasoning") or None
             tool_calls_out = []
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function") or {}
@@ -577,6 +582,7 @@ class OpenAICompatProvider(BaseProvider):
                 "model": m,
                 "tool_call_dialect": "native",
                 "reasoning_applied": reasoning_applied,
+                "reasoning_text": reasoning_text,
             }
 
     async def stream(
@@ -844,10 +850,16 @@ class GeminiProvider(BaseProvider):
         if reasoning and reasoning != "off":
             knob = _gemini_thinking_knob(m)
             if knob == "level":
-                body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": reasoning}
+                body["generationConfig"]["thinkingConfig"] = {
+                    "thinkingLevel": reasoning,
+                    "includeThoughts": True,
+                }
                 reasoning_applied = True
             elif knob == "budget":
-                body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": _GEMINI_BUDGETS[reasoning]}
+                body["generationConfig"]["thinkingConfig"] = {
+                    "thinkingBudget": _GEMINI_BUDGETS[reasoning],
+                    "includeThoughts": True,
+                }
                 reasoning_applied = True
 
         url = f"{self.base_url}/models/{m}:generateContent?key={self.api_key}"
@@ -879,7 +891,23 @@ class GeminiProvider(BaseProvider):
                     f"gemini no candidates: {json.dumps(d)[:200]}", status=200, retryable=True
                 )
             parts = cands[0].get("content", {}).get("parts", []) or []
-            text = "".join(p.get("text", "") for p in parts if "text" in p)
+            # Gemini marks reasoning parts with a sibling `thought: true`, not a
+            # separate response field -- split before joining so thought content
+            # never lands in `text`. Known gap, intentionally not handled here:
+            # some configurations return thought content as a plain text part
+            # prefixed "THOUGHT:" instead of setting the `thought` flag
+            # (googleapis/python-genai#2121, upstream, unfixed as of this
+            # writing) -- those slip through as answer text same as before.
+            answer_chunks: list[str] = []
+            thought_chunks: list[str] = []
+            for p in parts:
+                if "text" not in p:
+                    continue
+                (thought_chunks if p.get("thought") is True else answer_chunks).append(
+                    p.get("text", "")
+                )
+            text = "".join(answer_chunks)
+            reasoning_text = "".join(thought_chunks) or None
             tool_calls_out = []
             for p in parts:
                 fc = p.get("functionCall") or p.get("function_call")
@@ -914,6 +942,7 @@ class GeminiProvider(BaseProvider):
                 "model": m,
                 "tool_call_dialect": "native",
                 "reasoning_applied": reasoning_applied,
+                "reasoning_text": reasoning_text,
             }
 
 
@@ -1119,6 +1148,19 @@ class OllamaProvider(BaseProvider):
             "options": {"temperature": temperature, "num_predict": max_tokens},
             "stream": False,
         }
+        # Ollama's own /api/chat accepts `think` as false/true or a graded
+        # "low"/"medium"/"high" string -- confirmed live against the real API,
+        # which rejects an invalid value with the exact set it allows. This
+        # was never read at all before: reasoning="off" and reasoning=None
+        # produced byte-for-byte identical requests, so a thinking-by-default
+        # model (qwen3 and others) kept thinking regardless of what a caller
+        # asked for. Left unset, Ollama's own per-model default applies, same
+        # as every other dial in this file when nothing is sent -- unset is
+        # deliberately not translated into "off" here; that default-suppression
+        # question is a separate, deferred finding (G3 in the S17 ledger).
+        think = False if reasoning == "off" else (reasoning if reasoning in ("low", "medium", "high") else None)
+        if think is not None:
+            body["think"] = think
         if native:
             body["tools"] = [
                 {
@@ -1151,6 +1193,10 @@ class OllamaProvider(BaseProvider):
             d = r.json()
             msg = d.get("message", {}) or {}
             text = msg.get("content", "") or ""
+            # Ollama returns a thinking model's reasoning in its own field,
+            # never merged into content. It was already generated and billed
+            # for; capturing it costs nothing further and was not happening.
+            reasoning_text = msg.get("thinking") or None
             tool_calls_out = []
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function") or {}
@@ -1185,7 +1231,8 @@ class OllamaProvider(BaseProvider):
                 "stop_reason": "tool_use" if tool_calls_out else "end_turn",
                 "model": m,
                 "tool_call_dialect": dialect,
-                "reasoning_applied": False,
+                "reasoning_applied": think is not None,
+                "reasoning_text": reasoning_text,
             }
 
 
