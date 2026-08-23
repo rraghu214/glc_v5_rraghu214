@@ -46,13 +46,24 @@ def _ehlo_name() -> str:
     what advertises the server's extensions, the next call fails as
     ``SMTPNotSupportedError: STARTTLS extension not supported by server``,
     which points at the server rather than at the name we sent it.
+
+    A validated name with no domain suffix is handled the way smtplib's own
+    default (no ``local_hostname`` at all) already handles it: promoted to a
+    bracketed address literal (RFC 5321 4.1.3) rather than sent bare, so this
+    only adds a safety net for the corrupted case -- it never trades away
+    behaviour smtplib already got right for the merely-dotless one.
     """
     try:
         candidate = socket.getfqdn().strip()
     except Exception:  # noqa: BLE001 - name resolution must never break sending
         candidate = ""
     if candidate and _EHLO_SAFE.match(candidate):
-        return candidate
+        if "." in candidate:
+            return candidate
+        try:
+            return f"[{socket.gethostbyname(socket.gethostname())}]"
+        except socket.gaierror:
+            return "[127.0.0.1]"
     return "localhost"
 
 
